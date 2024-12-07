@@ -1,108 +1,157 @@
-import re, csv
+import re
+import csv
 
-class Log_Analysis():
-    
-    def __init__(self,file_path="sample.log",output_file="log_analysis_results.csv") -> None:
-        self.__FILE_PATH = file_path
-        self.__OUTPUT_FILE = output_file
-        self.__DATA_PATTERN = r'(\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b)\s-\s-\s\[[^\]]+\]\s"([A-Z]+)\s([^\s]+)\sHTTP/[^\"]+"\s([1-5][0-9]{2})'
+
+class LogAnalysis:
+    """
+    A class to analyze log files, extract key metrics, and generate reports.
+    """
+
+    def __init__(self, file_path="sample.log", output_file="log_analysis_results.csv"):
+        """
+        Initialize the LogAnalysis class with file paths and patterns.
+        :param file_path: Path to the log file.
+        :param output_file: Path for the output CSV file.
+        """
+        self.file_path = file_path
+        self.output_file = output_file
+        self.data_pattern = (
+            r'(\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b)\s-\s-\s\[[^\]]+\]\s"([A-Z]+)\s([^\s]+)\sHTTP/[^\"]+"\s([1-5][0-9]{2})'
+        )
         self.ip_extraction = None
         self.endpoints = None
         self.suspicious_activity = None
 
     def read_file(self):
-        lines = None
-        with open(self.__FILE_PATH,'r') as log_file:
-            lines = log_file.readlines()
-            return lines
+        """
+        Reads the log file and returns its content as a list of lines.
+        :return: List of log lines.
+        """
+        with open(self.file_path, 'r') as log_file:
+            return log_file.readlines()
 
-    def data_extraction(self,content):
+    def data_extraction(self, content):
+        """
+        Extracts data from log content using regex and organizes it by IP address.
+        :param content: Raw log content as a string.
+        """
         data_template = {}
 
-        data = re.findall(self.__DATA_PATTERN,str(content))
-        for log in data:
+        # Extract data matching the pattern
+        logs = re.findall(self.data_pattern, str(content))
+        for log in logs:
+            ip, method, endpoint, status_code = log
 
-            if not data_template.get(log[0]):
-               data_template[log[0]] = {"body":[],"end_points":[],"status_code":[],"request_count":0,"failed_login":[]}
-            data_template[log[0]]["body"].append(f"{log[2]} - {log[3]}")
-            data_template[log[0]]["end_points"].append(f"{log[2]}")
-            data_template[log[0]]["status_code"].append(f"{log[3]}")
-            data_template[log[0]]["request_count"] = len(data_template[log[0]]["end_points"])
-            if log[3] == "401":
-                data_template[log[0]]["failed_login"].append(f"{log[2]}")
+            if ip not in data_template:
+                # Initialize data structure for new IP
+                data_template[ip] = {
+                    "requests": [],
+                    "endpoints": [],
+                    "status_codes": [],
+                    "request_count": 0,
+                    "failed_logins": []
+                }
+
+            # Populate the data structure
+            data_template[ip]["requests"].append(f"{endpoint} - {status_code}")
+            data_template[ip]["endpoints"].append(endpoint)
+            data_template[ip]["status_codes"].append(status_code)
+            data_template[ip]["request_count"] += 1
+            if status_code == "401":  # Failed login attempts
+                data_template[ip]["failed_logins"].append(endpoint)
 
         self.ip_extraction = data_template
 
     def endpoint_access(self):
-        extracted_data = self.ip_extraction if self.ip_extraction else None
-        end_points = {}
-        if extracted_data:
-            for ip in extracted_data:
-                for endpoint in extracted_data[ip]['end_points']:
-                    if not end_points.get(endpoint):
-                        end_points[endpoint] = 0
-                    end_points[endpoint] += 1
-            self.endpoints = end_points
-            
-        else:
+        """
+        Calculates access counts for each endpoint across all IPs.
+        """
+        if not self.ip_extraction:
             return "No data is extracted"
 
+        end_points = {}
+        for ip_data in self.ip_extraction.values():
+            for endpoint in ip_data["endpoints"]:
+                end_points[endpoint] = end_points.get(endpoint, 0) + 1
+
+        self.endpoints = end_points
 
     def request_count_per_ip(self):
+        """
+        Returns the request count per IP, sorted by count in descending order.
+        :return: Dictionary of IP addresses and their request counts.
+        """
         if self.ip_extraction is None:
             content = self.read_file()
             self.data_extraction(content)
-        sorted_data = sorted(self.ip_extraction.items(), key=lambda item: item[1]["request_count"],reverse=True)
-        output = {"IP Address":"Request Count"}
-        
-        for log in sorted_data:
-            output[log[0]] = log[1]['request_count']
-        return output
-        
+
+        # Sort by request count
+        sorted_data = sorted(self.ip_extraction.items(), key=lambda x: x[1]["request_count"], reverse=True)
+        return {ip: data["request_count"] for ip, data in sorted_data}
+
     def frequent_access_endpoint(self):
+        """
+        Returns the most frequently accessed endpoints, sorted by access count.
+        :return: Dictionary of endpoints and their access counts.
+        """
         if self.endpoints is None:
             self.endpoint_access()
-        sorted_endpoints = dict(sorted(self.endpoints.items(), key=lambda item: item[1],reverse=True))
-        
-        labels = {"Endpoint":"Access Count"}
-        output = {**labels,**sorted_endpoints}
-        return output
-    
-    def detect_suspicious_activity(self,threshold=10):
-        data = self.ip_extraction
-        output = {"IP Address":"Failed Login Count"}
-        
-        for data in data.items():
-            if data[1]["failed_login"] and len(data[1]["failed_login"]) >= threshold:
-                output[data[0]] = len(data[1]["failed_login"])
+
+        # Sort by access count
+        return dict(sorted(self.endpoints.items(), key=lambda x: x[1], reverse=True))
+
+    def detect_suspicious_activity(self, threshold=10):
+        """
+        Detects suspicious activity based on the number of failed login attempts.
+        :param threshold: Minimum number of failed attempts to flag as suspicious.
+        :return: Dictionary of suspicious IPs and their failed login counts.
+        """
+        if self.ip_extraction is None:
+            content = self.read_file()
+            self.data_extraction(content)
+
+        output = {}
+        for ip, data in self.ip_extraction.items():
+            failed_login_count = len(data["failed_logins"])
+            if failed_login_count >= threshold:
+                output[ip] = failed_login_count
+
         self.suspicious_activity = output
         return output
 
     def output_csv(self):
-        with open(self.__OUTPUT_FILE,"w",newline="") as file:
+        """
+        Generates a CSV report with requests per IP, accessed endpoints, and suspicious activities.
+        """
+        with open(self.output_file, "w", newline="") as file:
             writer = csv.writer(file)
 
+            # Write request counts per IP
             writer.writerow(["Requests per IP:"])
-            for ip, request in self.request_count_per_ip().items():
-                writer.writerow([ip,request])
-            
-            writer.writerow([""])
+            for ip, count in self.request_count_per_ip().items():
+                writer.writerow([ip, count])
 
-            writer.writerow(["Most Accessed Endpoint:"])
+            writer.writerow([])  # Blank line
+
+            # Write most accessed endpoints
+            writer.writerow(["Most Accessed Endpoints:"])
             for endpoint, count in self.frequent_access_endpoint().items():
-                writer.writerow([endpoint,count])
-            
-            writer.writerow([""])
-            
+                writer.writerow([endpoint, count])
+
+            writer.writerow([])  # Blank line
+
+            # Write suspicious activities
             writer.writerow(["Suspicious Activity:"])
-            for ip, failed_attepmt in self.detect_suspicious_activity().items():
-                writer.writerow([ip, failed_attepmt])
-            
+            for ip, failed_count in self.detect_suspicious_activity().items():
+                writer.writerow([ip, failed_count])
 
     def main(self):
+        """
+        Main function to process the log file and generate the CSV report.
+        """
         self.output_csv()
-        
 
-if __name__ == '__main__':
-   log = Log_Analysis(file_path="sample.log")
-   log.main()
+
+if __name__ == "__main__":
+    log_analysis = LogAnalysis(file_path="sample.log")
+    log_analysis.main()
